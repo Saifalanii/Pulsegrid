@@ -1,0 +1,40 @@
+{
+  "name": "Pulsegrid",
+  "short_name": "Pulsegrid",
+  "description": "A neon arena survivor. One deterministic Daily Run, every day. Build a streak, bank shards, go deeper.",
+  "id": "/pulsegrid/",
+  "start_url": ".",
+  "scope": ".",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#04070d",
+  "theme_color": "#04070d",
+  "categories": ["games", "entertainment"],
+  "lang": "en",
+  "dir": "ltr",
+  "prefer_related_applications": false,
+  "icons": [
+    { "src": "icons/favicon-64.png", "sizes": "64x64", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    {
+      "name": "Daily Run",
+      "short_name": "Daily",
+      "description": "Jump straight into today's seeded run",
+      "url": "./?mode=daily",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Practice Run",
+      "short_name": "Practice",
+      "description": "Unseeded run, no streak at stake",
+      "url": "./?mode=practice",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

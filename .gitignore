@@ -1,0 +1,17 @@
+# Pulsegrid has no build step and no dependencies — there is deliberately very little
+# to ignore. Generated icons ARE committed: they're produced by tools/make-icons.mjs,
+# but the PWA manifest references them directly and the service worker caches them, so
+# a fresh clone must be installable without running a generator first.
+
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+.vscode/
+.idea/
+*.swp
+*~
