@@ -115,6 +115,29 @@ export class Renderer {
     if (w !== this.w || h !== this.h) this.resize();
   }
 
+  /**
+   * Re-applies the exact camera/shake/zoom transform begin() used, without touching
+   * the background or compositing state, then hands the context to `fn` and restores.
+   *
+   * Exists so a caller can draw something in world coordinates that lands in the
+   * right place on screen but *after* end() has already run the bloom/chroma/vignette
+   * pipeline — e.g. the player's face, which needs to track the hull exactly but must
+   * not be smeared by the full-scene blur bloom does. Call after end(), not between
+   * begin()/end(); this only sets the transform, it doesn't clear or composite.
+   */
+  withWorldTransform(juice, fn) {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const z = this.scale * juice.zoom;
+    ctx.translate(this.canvas.width / 2, this.canvas.height / 2);
+    ctx.rotate(juice.rot);
+    ctx.scale(z * this.dpr, z * this.dpr);
+    ctx.translate(-this.camX + juice.ox / z, -this.camY + juice.oy / z);
+    fn(ctx);
+    ctx.restore();
+  }
+
   begin(palette, juice) {
     const ctx = this.ctx;
     const { width, height } = this.canvas;

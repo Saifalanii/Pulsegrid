@@ -211,11 +211,24 @@ h3.sub { font-size: 13px; letter-spacing: 0.2em; color: var(--text-dim); margin-
 
 .daily-meta { display: flex; gap: 12px; }
 .daily-meta > div {
-  flex: 1; display: flex; flex-direction: column; gap: 3px;
+  flex: 1;
+  /* Root cause of the countdown clipping bug: flex items default to min-width:auto,
+     so a wide sibling (a long score in "YOUR BEST TODAY") refuses to shrink and pushes
+     "RESETS IN" past the row's edge. .card has overflow:hidden, so that overflow was
+     invisible rather than just squished — it read as the field being cut off. min-width:0
+     lets the item actually shrink to its share of the row instead of fighting for content
+     width. */
+  min-width: 0;
+  display: flex; flex-direction: column; gap: 3px;
   background: rgba(255,255,255,0.03); border-radius: 9px; padding: 9px 11px;
 }
 .daily-meta .k { font-size: 9.5px; letter-spacing: 0.16em; color: #6d8397; }
-.daily-meta .v { font-size: 16px; font-weight: 800; }
+.daily-meta .v {
+  font-size: 16px; font-weight: 800;
+  /* Long values (a six-figure score, or the countdown on very narrow phones) now
+     truncate with an ellipsis instead of forcing the box wider than its share. */
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .daily-note { font-size: 11.5px; color: var(--text-dim); text-align: center; letter-spacing: 0.06em; }
 
 /* ------------------------------------------------------------ streak */
@@ -258,7 +271,14 @@ h3.sub { font-size: 13px; letter-spacing: 0.2em; color: var(--text-dim); margin-
 
 .hud-top {
   position: absolute; top: 0; left: 0; right: 0;
-  padding: calc(var(--safe-t) + 10px) calc(var(--safe-r) + 12px) 0 calc(var(--safe-l) + 12px);
+  /* max() rather than plain calc(safe-area + constant): env(safe-area-inset-*) is not
+     reliably populated across every installed-PWA display mode (it was reporting ~0 in
+     "fullscreen" mode on the device this was tested on, per the "score crammed into the
+     corner" report), so the score had almost nothing but 10px/12px between it and the
+     literal screen edge. max() guarantees real breathing room even when the safe-area
+     value is 0 or absent, instead of the whole inset depending on one fragile source. */
+  padding: max(var(--safe-t), 8px) calc(20px + var(--safe-r)) 0 calc(20px + var(--safe-l));
+  padding-top: calc(max(var(--safe-t), 8px) + 14px);
   display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;
 }
 .hud-left, .hud-right { flex: 1; display: flex; flex-direction: column; gap: 3px; }
@@ -334,26 +354,47 @@ h3.sub { font-size: 13px; letter-spacing: 0.2em; color: var(--text-dim); margin-
 .lvl { left: 8px; right: auto; }
 
 /* ------------------------------------------------------------ voice ticker
+   (speech bubble, anchored to the player)
 
-   Sits above the bars, out of the thumb zone and out of the action. Never blocks
-   input (pointer-events: none) and never reflows the HUD — it's absolutely
-   positioned, so a line appearing can't shift the health bar under your thumb. */
+   Originally this sat fixed at the bottom of the screen — exactly where combat
+   intensity concentrates the player's attention on the joystick and their own thumb,
+   not on text near the edge. It was readable in a still screenshot and useless in
+   actual play. Now it's positioned every frame (see UI.positionVoiceNear, driven from
+   main.js's render loop) at the player's own on-screen position, floating just above
+   the hull with a small tail pointing down at it — so a line reads as the character
+   talking, not a subtitle track glued to the chrome.
+
+   `left`/`top` are set inline by JS each frame; this rule only supplies the anchor-point
+   offset (bubble sits above and centred on that point) and the fade. pointer-events
+   stays none throughout — it must never steal a touch meant for the joystick/dash. */
 
 .voice {
   position: absolute;
-  left: 50%; bottom: calc(var(--safe-b) + 58px);
-  transform: translateX(-50%) translateY(10px);
+  left: 50%; top: 50%;                 /* JS overrides these every frame while visible */
+  transform: translate(-50%, calc(-100% - 26px));
   display: flex; align-items: baseline; gap: 8px;
-  max-width: min(92vw, 420px);
+  max-width: min(78vw, 340px);
   padding: 8px 14px; border-radius: 11px;
-  background: rgba(6, 11, 18, 0.72);
+  background: rgba(6, 11, 18, 0.82);
   border: 1px solid var(--panel-line);
   backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
   opacity: 0; pointer-events: none;
-  transition: opacity 0.26s var(--ease), transform 0.26s var(--ease);
+  transition: opacity 0.22s var(--ease), left 0.12s linear, top 0.12s linear;
+  will-change: left, top;
 }
-.voice.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.voice.show { opacity: 1; }
 .voice.rival { border-color: rgba(190, 130, 255, 0.55); }
+/* Tail, pointing down at the character the line came from. */
+.voice::after {
+  content: ''; position: absolute; left: 50%; bottom: -7px;
+  width: 12px; height: 12px; margin-left: -6px;
+  background: rgba(6, 11, 18, 0.82);
+  border-right: 1px solid var(--panel-line);
+  border-bottom: 1px solid var(--panel-line);
+  transform: rotate(45deg);
+  border-radius: 0 0 3px 0;
+}
+.voice.rival::after { border-color: rgba(190, 130, 255, 0.55); }
 .voice-who {
   font-size: 9.5px; font-weight: 800; letter-spacing: 0.2em;
   color: var(--c); flex: 0 0 auto;

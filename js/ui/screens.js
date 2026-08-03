@@ -11,7 +11,7 @@ import { SHOP, WEAPONS, STREAK_LOCKED } from '../game/defs.js';
 import { TRAILS } from '../game/palette.js';
 import { mutatorFor, msUntilTomorrow, formatCountdown, MUTATORS } from '../game/daily.js';
 import { todayKey, dayOffsetKey } from '../core/rng.js';
-import { formatTime } from '../core/math.js';
+import { formatTime, clamp } from '../core/math.js';
 import { Portrait } from '../fx/face.js';
 import { CORES, RIVAL, STAKES, TRAIL_BLURBS, coreFor } from '../game/characters.js';
 import { voice } from '../game/voice.js';
@@ -98,11 +98,39 @@ export class UI {
     }, dur);
   }
 
+  /** Cheap enough to poll every frame; avoids a style write when there's nothing shown. */
+  voiceVisible() { return this._voicePriority >= 0; }
+
   hideVoice() {
     clearTimeout(this._voiceTimer);
     $('voice').classList.remove('show');
     this._voiceUntil = 0;
     this._voicePriority = -1;
+  }
+
+  /**
+   * Re-anchors the speech bubble to the player's current on-screen position. Called
+   * once per frame from the main loop while a run is active — the player moves
+   * constantly, so this can't be set once in say() and left alone, or the bubble
+   * would drift away from the character within a second.
+   *
+   * Clamped inward from the true edges (roughly half the bubble's own max-width/height)
+   * so it can't render partway off-screen when the player is near the arena boundary —
+   * the same class of bug as the countdown-clipping fix elsewhere, avoided up front
+   * instead of relying on the browser to do something sensible with an off-screen box.
+   *
+   * @param {number} sx screen-space (css px) x
+   * @param {number} sy screen-space (css px) y
+   */
+  positionVoiceNear(sx, sy) {
+    const marginX = 178;   // ~half of .voice's max-width (340px) plus a little air
+    const marginTop = 90;  // bubble height + tail + HUD score/time row it must clear
+    const marginBottom = 70;
+    const x = clamp(sx, marginX, Math.max(marginX, window.innerWidth - marginX));
+    const y = clamp(sy, marginTop, Math.max(marginTop, window.innerHeight - marginBottom));
+    const box = $('voice');
+    box.style.left = x + 'px';
+    box.style.top = y + 'px';
   }
 
   // ------------------------------------------------------------ portraits

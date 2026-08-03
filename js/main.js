@@ -99,18 +99,30 @@ class Game {
     });
 
     // Audio unlock on the first real gesture, anywhere.
+    //
+    // Bound to document.body rather than window: iOS standalone PWAs (installed to the
+    // home screen) have been observed to not reliably count a window-level listener as
+    // a valid "user gesture" for unlocking AudioContext, even though the identical
+    // listener works fine in a normal Safari tab. Binding to a concrete element in the
+    // document is the safer target for both contexts.
     const unlock = async () => {
       const ok = await audio.unlock();
       if (ok) {
-        audio.setMuted(save.data.settings.muted);
-        audio.setSfxVolume(save.data.settings.sfxVolume);
-        audio.setMusicVolume(save.data.settings.musicVolume);
-        window.removeEventListener('pointerdown', unlock);
+        requestAnimationFrame(() => {
+          audio.setMuted(save.data.settings.muted);
+          audio.setSfxVolume(save.data.settings.sfxVolume);
+          audio.setMusicVolume(save.data.settings.musicVolume);
+        });
+        document.body.removeEventListener('pointerdown', unlock);
+        document.body.removeEventListener('touchend', unlock);
+        document.body.removeEventListener('click', unlock);
         window.removeEventListener('keydown', unlock);
       }
     };
-    window.addEventListener('pointerdown', unlock);
-    window.addEventListener('keydown', unlock);
+    document.body.addEventListener('pointerdown', unlock, { passive: true });
+    document.body.addEventListener('touchend', unlock, { passive: true });
+    document.body.addEventListener('click', unlock);
+    window.addEventListener('keydown', unlock); // no element to bind to; window is fine here
 
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Escape') {
@@ -376,6 +388,19 @@ class Game {
     r.begin(pal, juice);
     active.draw(r);
     r.end(pal, juice);
+
+    // Drawn after end() on purpose — see Run.drawFaceOverlay(). The bloom pass in
+    // end() blurs the whole scene and adds it back, which is what was washing the
+    // eyes out: the dark sockets have no defense against a full-frame glow blur
+    // added on top of them. Outside the bloom bracket, they stay crisp.
+    active.drawFaceOverlay?.(r);
+
+    // Speech bubble tracks the player every frame it's visible — see positionVoiceNear
+    // for why this can't just be set once in ui.say() and left alone.
+    if (this.ui.voiceVisible()) {
+      const pos = r.worldToScreen(active.player.x, active.player.y);
+      this.ui.positionVoiceNear(pos.x, pos.y);
+    }
 
     if (this.state === S_PLAYING) r.drawStick(this.input.stickVisual(), pal);
 

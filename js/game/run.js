@@ -1244,16 +1244,20 @@ export class Run {
     }
   }
 
-  _drawPlayer(r) {
+  /** Shared by the hull pass and the face overlay so they blink in lockstep. */
+  _playerVisible() {
     const p = this.player;
-    if (!p.alive) return;
-    const ctx = r.ctx;
+    if (!p.alive) return false;
+    // Invulnerability blink — skip frames rather than fade, so it's unmistakable.
+    if (p.iframes > 0 && Math.floor(p.iframes * 18) % 2 === 0 && p.dashT <= 0) return false;
+    return true;
+  }
+
+  _drawPlayer(r) {
+    if (!this._playerVisible()) return;
+    const p = this.player;
     const pal = this.palette;
     const trail = trailColor(this.trailId, this.time);
-
-    // Invulnerability blink — skip frames rather than fade, so it's unmistakable.
-    if (p.iframes > 0 && Math.floor(p.iframes * 18) % 2 === 0 && p.dashT <= 0) return;
-
     const hurt = p.hurtFlash;
     const body = hurt > 0.1 ? [255, 210, 210] : trail;
 
@@ -1274,9 +1278,12 @@ export class Run {
     r.glowPoly(p.x, p.y, p.r, 3, p.aim, body, 3.4, 1 + hurt, 0.16);
     r.glowOrb(p.x, p.y, p.r * 2.4, body, 0.8 + hurt * 0.4);
 
-    // Face, drawn last so the sockets punch through the hull's bright core. Stays
-    // screen-upright while the hull rotates with aim.
-    this.face.draw(ctx, p.x, p.y + p.r * 0.06, p.r * 1.9, this.core.pupilRgb);
+    // Face is NOT drawn here — see drawFaceOverlay(). This pass still runs inside
+    // begin()/end(), and end() blurs the whole scene for bloom and adds it straight
+    // back on top. That blur doesn't know or care that the eye sockets are dark; it
+    // just smears the surrounding bright hull glow over them, and the sockets lose
+    // all contrast. Drawing the face in a separate pass *after* the bloom composite
+    // is what actually fixes it — not a layering trick within this pass.
 
     // Aim indicator: a short spur, not a laser sight — keeps the screen clean.
     const ax = p.x + Math.cos(p.aim) * (p.r + 16);
@@ -1298,6 +1305,25 @@ export class Run {
         r.glowOrb(px, py, ready ? 5 : 3, ready ? pal.accent : pal.primaryDim, ready ? 0.9 : 0.35);
       }
     }
+  }
+
+  /**
+   * Draws the face in a pass of its own, called from main.js AFTER r.end() has already
+   * run the bloom/chroma/vignette pipeline. The hull is drawn during the normal
+   * begin()/end() bracket like everything else and gets bloomed like everything else;
+   * the face is deliberately excluded from that so the dark eye sockets keep their
+   * contrast instead of being smeared over by the blurred hull glow sitting behind them.
+   *
+   * Uses the exact same camera/shake/zoom transform the entity pass used (via
+   * Renderer.withWorldTransform), so the face still tracks the hull pixel-for-pixel —
+   * this only changes *when* it's drawn relative to bloom, not where.
+   */
+  drawFaceOverlay(r) {
+    if (!this._playerVisible()) return;
+    const p = this.player;
+    r.withWorldTransform(juice, (ctx) => {
+      this.face.draw(ctx, p.x, p.y + p.r * 0.06, p.r * 1.9, this.core.pupilRgb);
+    });
   }
 
   // ---------------------------------------------------------------- results

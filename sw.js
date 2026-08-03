@@ -4,7 +4,7 @@
 //
 // Bump CACHE when shipping: the old cache is deleted on activate.
 
-const CACHE = 'pulsegrid-v1';
+const CACHE = 'pulsegrid-v4';
 
 // On localhost the cache-first strategy below happily serves the module you edited
 // thirty seconds ago, and you debug a file the page isn't running. Development gets

@@ -16,6 +16,19 @@ import { clamp } from './math.js';
 const SCALE = [0, 3, 5, 7, 10];
 const ROOT = 55; // A1
 
+// Harmonic movement so the music doesn't sit on one note for an entire run.
+// Semitone offsets from ROOT: i - iv - v - bIII-ish. Loops.
+const PROGRESSION = [0, -5, -7, -3];
+const BARS_PER_CHORD = 4; // how many 16-step bars before the chord moves on
+
+// Bag of bass patterns, picked without immediate repeats — same principle the
+// bark system uses, so the groove doesn't loop identically forever either.
+const BASS_PATTERNS = [
+  [0, -1, 0, 2, -1, 0, 3, -1, 0, -1, 2, -1, 0, 3, 4, -1],
+  [0, -1, 2, -1, 0, -1, 3, -1, 0, -1, 2, -1, 4, -1, 0, -1],
+  [0, 2, -1, 0, -1, 3, -1, 0, 2, -1, 0, -1, 4, -1, 3, -1],
+];
+
 const midiToFreq = (m) => 440 * Math.pow(2, (m - 69) / 12);
 
 export class AudioEngine {
@@ -35,6 +48,9 @@ export class AudioEngine {
     this._bpm = 82;
     this._playing = false;
     this._lastSfxAt = new Map(); // crude per-sound rate limit
+    this._totalBars = 0;
+    this._chordIdx = 0;
+    this._bassPattern = BASS_PATTERNS[0];
   }
 
   /** Safe to call repeatedly; only the first user gesture actually resumes. */
@@ -50,7 +66,26 @@ export class AudioEngine {
     }
     this.unlocked = this.ctx.state === 'running';
     this.ready = this.unlocked;
+
+    // iOS Safari quirk: resume() can resolve as "running" before the render thread
+    // has actually started producing audio. Gain automation scheduled in the same
+    // tick can get silently dropped. A one-sample inaudible blip forces the graph
+    // to genuinely start, so volume settings applied right after this actually
+    // take effect — instead of needing a manual mute/unmute to "wake" it.
+    if (this.unlocked) this._primeOutput();
+
     return this.unlocked;
+  }
+
+  _primeOutput() {
+    const ctx = this.ctx;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    g.gain.value = 0.0001;
+    osc.connect(g);
+    g.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.02);
   }
 
   _buildGraph() {
@@ -184,8 +219,8 @@ export class AudioEngine {
   shoot(pitch = 1) {
     if (this._throttle('shoot', 34)) return;
     this._tone({ type: 'triangle', freq: 760 * pitch, toFreq: 300 * pitch, dur: 0.085, gain: 0.12, attack: 0.002 });
-    this._tone({ type: 'square', freq: 1500 * pitch, toFreq: 700 * pitch, dur: 0.05, gain: 0.035 });
-    this._noiseHit({ dur: 0.045, gain: 0.05, freq: 2600, sweepTo: 900, q: 0.9 });
+    this._tone({ type: 'triangle', freq: 1500 * pitch, toFreq: 700 * pitch, dur: 0.05, gain: 0.022 });
+    this._noiseHit({ dur: 0.045, gain: 0.03, freq: 2000, sweepTo: 800, q: 0.9 });
   }
 
   hit() {
@@ -298,6 +333,9 @@ export class AudioEngine {
     if (!this.ready || this._playing) return;
     this._playing = true;
     this._step = 0;
+    this._totalBars = 0;
+    this._chordIdx = 0;
+    this._bassPattern = BASS_PATTERNS[0];
     this._nextStepTime = this.ctx.currentTime + 0.08;
     this.musicBus.gain.cancelScheduledValues(this.ctx.currentTime);
     this.musicBus.gain.setValueAtTime(0.0001, this.ctx.currentTime);
@@ -323,6 +361,7 @@ export class AudioEngine {
     const t = ctx.currentTime;
     this._drone = [];
     this._droneGains = [];
+    this._droneOscs = [];
     // Two slightly detuned saws + a sine sub = a bed that sits under everything.
     [[ROOT, 'sawtooth', 0.030, -7], [ROOT, 'sawtooth', 0.030, 7], [ROOT - 12, 'sine', 0.055, 0]]
       .forEach(([note, type, gain, detune]) => {
@@ -331,7 +370,7 @@ export class AudioEngine {
         const filt = ctx.createBiquadFilter();
         filt.type = 'lowpass';
         filt.frequency.value = 420;
-        filt.Q.value = 3;
+        filt.Q.value = 1.2;
         osc.type = type;
         osc.frequency.value = midiToFreq(note);
         osc.detune.value = detune;
@@ -340,6 +379,7 @@ export class AudioEngine {
         osc.connect(filt); filt.connect(g); g.connect(this.musicBus);
         osc.start(t);
         this._drone.push(osc);
+        this._droneOscs.push({ osc, baseOffset: note - ROOT });
         this._droneGains.push({ g, filt, base: gain });
       });
   }
@@ -359,7 +399,7 @@ export class AudioEngine {
     if (this._droneGains) {
       const t = this.ctx.currentTime;
       for (const d of this._droneGains) {
-        d.filt.frequency.setTargetAtTime(420 + I * 1500, t, 0.4);
+        d.filt.frequency.setTargetAtTime(420 + I * 900, t, 0.4);
         d.g.gain.setTargetAtTime(d.base * (1 + I * 0.5), t, 0.4);
       }
     }
@@ -379,9 +419,30 @@ export class AudioEngine {
     const delay = Math.max(0, time - ctx.currentTime);
     const bus = this.musicBus;
 
+    if (step === 0) {
+      this._totalBars++;
+      const newChordIdx = Math.floor(this._totalBars / BARS_PER_CHORD) % PROGRESSION.length;
+      if (newChordIdx !== this._chordIdx) {
+        this._chordIdx = newChordIdx;
+        const newChordRoot = ROOT + PROGRESSION[this._chordIdx];
+        if (this._droneOscs) {
+          this._droneOscs.forEach(({ osc, baseOffset }) => {
+            osc.frequency.setTargetAtTime(midiToFreq(newChordRoot + baseOffset), time, 0.6);
+          });
+        }
+        // Pick a new bass pattern that isn't the one we just played.
+        let next = this._bassPattern;
+        while (next === this._bassPattern && BASS_PATTERNS.length > 1) {
+          next = BASS_PATTERNS[Math.floor(Math.random() * BASS_PATTERNS.length)];
+        }
+        this._bassPattern = next;
+      }
+    }
+    const chordRoot = ROOT + PROGRESSION[this._chordIdx];
+
     // Sub pulse on the downbeat — present at every intensity, the heartbeat.
     if (step % 8 === 0) {
-      this._tone({ type: 'sine', freq: midiToFreq(ROOT - 12), toFreq: midiToFreq(ROOT - 24),
+      this._tone({ type: 'sine', freq: midiToFreq(chordRoot - 12), toFreq: midiToFreq(chordRoot - 24),
                    dur: 0.5, gain: 0.10, delay, bus, attack: 0.01 });
     }
 
@@ -391,10 +452,9 @@ export class AudioEngine {
     }
 
     if (I > 0.35) {
-      const pat = [0, -1, 0, 2, -1, 0, 3, -1, 0, -1, 2, -1, 0, 3, 4, -1];
-      const s = pat[step];
+      const s = this._bassPattern[step];
       if (s >= 0) {
-        this._tone({ type: 'sawtooth', freq: midiToFreq(ROOT + SCALE[s % 5]),
+        this._tone({ type: 'sawtooth', freq: midiToFreq(chordRoot + SCALE[s % 5]),
                      dur: 0.14, gain: 0.075, delay, bus, attack: 0.006 });
       }
     }
@@ -406,8 +466,8 @@ export class AudioEngine {
     if (I > 0.75) {
       const arp = [0, 2, 4, 3, 2, 4, 1, 3];
       const s = arp[step % 8];
-      this._tone({ type: 'square', freq: midiToFreq(ROOT + 24 + SCALE[s]),
-                   dur: 0.09, gain: 0.030, delay, bus, detune: (I - 0.75) * 40 });
+      this._tone({ type: 'triangle', freq: midiToFreq(chordRoot + 24 + SCALE[s]),
+                   dur: 0.09, gain: 0.024, delay, bus, detune: (I - 0.75) * 20 });
     }
 
     // Bar-end tension riser once things are genuinely hairy.

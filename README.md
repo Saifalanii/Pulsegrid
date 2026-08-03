@@ -123,3 +123,55 @@ taunts a broken streak, grudgingly concedes at milestones.
 - Not yet profiled on real mid-range hardware (see the performance caveat above).
 - Enemy bullets lost their per-instance spin when they moved to the sprite path.
 - Voice lines are English-only and not externalised for translation.
+
+## PWA fixes (installed-app testing round)
+
+These were reported from the actual installed PWA, not the browser tab, and each had a
+distinct root cause — noted here so they read as fixes, not workarounds:
+
+- **Eyes washed out by glow.** The face was drawn inside the same `begin()/end()`
+  bracket as the hull, and `end()` blurs the *entire* scene for bloom and adds it back
+  on top — that full-frame blur doesn't know the eye sockets are meant to stay dark, so
+  it smeared the surrounding hull glow straight over them. Fix: the face is now drawn in
+  a separate pass, `Run.drawFaceOverlay()`, called from `main.js` *after* `r.end()` has
+  already finished the bloom/chroma/vignette pipeline, via a new `Renderer.
+  withWorldTransform()` that re-applies the same camera/shake/zoom transform so it still
+  tracks the hull pixel-for-pixel — only the timing relative to bloom changed.
+- **Countdown field clipped.** `.daily-meta`'s two columns are a flex row; flex items
+  default to `min-width: auto`, so a wide sibling (a long score under "YOUR BEST TODAY")
+  refused to shrink and pushed the countdown column past the row's edge. `.card` has
+  `overflow: hidden`, so the overflow was invisible rather than visibly squished — it
+  just read as "cut off". Fixed with `min-width: 0` on the flex children plus
+  `text-overflow: ellipsis` on the values so long numbers truncate instead of forcing
+  the layout wider.
+- **Score crammed into the corner.** `.hud-top`'s padding was `env(safe-area-inset-*) +
+  10-12px`. `display: "fullscreen"` in the manifest is a real known source of
+  unreliable safe-area-inset reporting on several Android/iOS versions — when the inset
+  reports 0, the score had almost nothing between it and the literal screen edge. Two
+  changes: the padding now uses `max(safe-area, floor)` so there's a guaranteed minimum
+  regardless of what the inset reports, and the manifest's primary `display` mode was
+  changed to `standalone` (well-supported, reliable safe-area reporting) rather than
+  `fullscreen` (experimental, spotty support) — see next point.
+- **Daily Run button "missing".** No code path hides it — it's static markup, always
+  first in the menu, above Practice Run. The likely explanation, given the other two
+  bugs above, is the same one: `"display": "fullscreen"` has known viewport/safe-area
+  bugs on some devices that can shift or occlude top content unpredictably. Manifest
+  now requests `standalone` first; existing installs may need a reinstall to pick up
+  the display-mode change; the fix itself is the same as the corner-spacing one.
+- **Voice text unreadable at the bottom.** It was fixed to the bottom edge of the
+  screen — structurally the least-attended part of the frame during combat. It's now a
+  speech bubble re-anchored to the player's live screen position every frame
+  (`UI.positionVoiceNear`, driven from the main render loop, clamped inward from the
+  edges so it can't render partway off-screen near the arena boundary), with a tail
+  pointing down at the character. `pointer-events: none` throughout, so it still can't
+  steal a touch meant for the joystick or dash.
+- **Silent in the installed PWA.** Root cause was twofold: (1) the unlock listener was
+  bound to `window`, and iOS standalone PWAs have been observed not to reliably count a
+  window-level listener as a valid user-gesture target for resuming `AudioContext`, even
+  though the identical listener works in a normal Safari tab — moved to `document.body`
+  plus `touchend`/`click` alternates. (2) `ctx.resume()` can resolve to `"running"` on
+  iOS before the render thread has actually started producing audio, silently dropping
+  gain automation scheduled in that same tick; a one-sample near-silent oscillator blip
+  (`_primeOutput()`) now forces the graph to genuinely start before volume settings are
+  applied, so they take effect immediately instead of needing a manual mute/unmute to
+  "wake" the graph.
