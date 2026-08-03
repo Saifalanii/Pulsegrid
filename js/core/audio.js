@@ -55,6 +55,14 @@ export class AudioEngine {
 
   /** Safe to call repeatedly; only the first user gesture actually resumes. */
   async unlock() {
+    // Must be the very first thing this function does — the whole point is to run
+    // synchronously inside the same user-gesture call stack that invoked unlock().
+    // iOS Safari standalone PWAs have been reported to trust a real <audio>/<video>
+    // element's .play() as unlock evidence more reliably than AudioContext.resume()
+    // alone; playing this silent clip costs nothing and gives resume() a second,
+    // independent path to actually taking effect instead of just one.
+    this._playSilentUnlockClip();
+
     if (!this.ctx) {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return false;
@@ -74,7 +82,45 @@ export class AudioEngine {
     // take effect — instead of needing a manual mute/unmute to "wake" it.
     if (this.unlocked) this._primeOutput();
 
+    this._unlockAttempts = (this._unlockAttempts || 0) + (this.unlocked ? 0 : 1);
     return this.unlocked;
+  }
+
+  /**
+   * Number of unlock() calls so far that did NOT end in a running AudioContext.
+   * main.js uses this to decide when to stop silently retrying and show a manual
+   * "tap to enable sound" prompt instead — the fallback the original brief asked for
+   * and which a purely silent retry loop never surfaces to the player.
+   */
+  get failedUnlockAttempts() { return this._unlockAttempts || 0; }
+
+  /** Builds (once) and plays a silent WAV via a real HTMLAudioElement. See unlock(). */
+  _playSilentUnlockClip() {
+    if (!this._silentEl) {
+      // 80 samples of 8-bit unsigned PCM silence (0x80) at 8kHz mono — the smallest
+      // WAV that's still unambiguously valid, built at runtime so there's no
+      // hand-typed base64 blob to get subtly wrong.
+      const samples = 80;
+      const buf = new ArrayBuffer(44 + samples);
+      const v = new DataView(buf);
+      const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+      str(0, 'RIFF'); v.setUint32(4, 36 + samples, true); str(8, 'WAVE');
+      str(12, 'fmt '); v.setUint32(16, 16, true);
+      v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+      v.setUint32(24, 8000, true); v.setUint32(28, 8000, true);
+      v.setUint16(32, 1, true); v.setUint16(34, 8, true);
+      str(36, 'data'); v.setUint32(40, samples, true);
+      for (let i = 0; i < samples; i++) v.setUint8(44 + i, 128);
+      const url = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+      this._silentEl = new Audio(url);
+      this._silentEl.loop = false;
+      this._silentEl.volume = 0;
+      this._silentEl.setAttribute('playsinline', '');
+    }
+    try {
+      this._silentEl.currentTime = 0;
+      this._silentEl.play().catch(() => {});
+    } catch { /* best-effort; AudioContext path below is the real unlock */ }
   }
 
   _primeOutput() {

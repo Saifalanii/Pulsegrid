@@ -79,10 +79,30 @@ export class Renderer {
     this._dmgVignette = null;
   }
 
-  /** World -> screen, for placing DOM elements over the canvas. */
-  worldToScreen(wx, wy, out = {}) {
-    out.x = (wx - this.camX) * this.scale + this.w / 2;
-    out.y = (wy - this.camY) * this.scale + this.h / 2;
+  /**
+   * World -> screen, for placing DOM elements over the canvas (the voice speech-bubble
+   * and its tail).
+   *
+   * Bug this fixes: this used to ignore juice's screen-shake offset, zoom-punch and
+   * rotation, while the actual face/hull render pass (begin() / withWorldTransform())
+   * applies all three. The DOM bubble and the canvas face were computed from two
+   * different transforms that only agreed when juice was fully at rest — the instant
+   * any shake kicked in (getting hit, a kill, even ordinary weapon recoil), the two
+   * positions diverged. The bubble has a solid dark background, so when it drifted onto
+   * the player it visually blotted out the eyes. Now it takes the same `juice` used for
+   * begin()/withWorldTransform() and applies the identical transform, so the two can
+   * never disagree.
+   */
+  worldToScreen(wx, wy, juice, out = {}) {
+    const z = this.scale * juice.zoom;
+    // Rotate the world offset by juice.rot before scaling — must match begin()'s
+    // ctx.rotate(juice.rot) applied before ctx.scale(), or the two paths diverge again
+    // the moment shake introduces any rotation.
+    const dx = wx - this.camX, dy = wy - this.camY;
+    const cos = Math.cos(juice.rot), sin = Math.sin(juice.rot);
+    const rx = dx * cos - dy * sin, ry = dx * sin + dy * cos;
+    out.x = rx * z + juice.ox + this.w / 2;
+    out.y = ry * z + juice.oy + this.h / 2;
     return out;
   }
 

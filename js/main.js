@@ -117,6 +117,13 @@ class Game {
         document.body.removeEventListener('touchend', unlock);
         document.body.removeEventListener('click', unlock);
         window.removeEventListener('keydown', unlock);
+      } else if (audio.failedUnlockAttempts >= 2 && !save.data.settings.muted) {
+        // A silent retry loop with no feedback is indistinguishable from "broken" to
+        // the player — this is the visible fallback the PWA-fixes brief asked for.
+        // Listeners stay attached: the very next tap anywhere still retries unlock()
+        // for free, this is purely about telling the player something is actually
+        // happening instead of leaving them guessing.
+        this.ui.toast('Sound is blocked — tap anywhere to enable it.', 3200);
       }
     };
     document.body.addEventListener('pointerdown', unlock, { passive: true });
@@ -398,7 +405,7 @@ class Game {
     // Speech bubble tracks the player every frame it's visible — see positionVoiceNear
     // for why this can't just be set once in ui.say() and left alone.
     if (this.ui.voiceVisible()) {
-      const pos = r.worldToScreen(active.player.x, active.player.y);
+      const pos = r.worldToScreen(active.player.x, active.player.y, juice);
       this.ui.positionVoiceNear(pos.x, pos.y);
     }
 

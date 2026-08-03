@@ -190,12 +190,19 @@ h3.sub { font-size: 13px; letter-spacing: 0.2em; color: var(--text-dim); margin-
   border-radius: 16px;
   padding: 18px;
   display: flex; flex-direction: column; gap: 14px;
-  position: relative; overflow: hidden;
+  position: relative;
+  /* No overflow:hidden. It bought nothing but rounding the corners of the 1px
+     decorative line below, and -webkit-backdrop-filter + overflow:hidden + a
+     flex-column parent is a known WebKit layout-bug combination on iOS Safari —
+     a real, reported cause of flex children (here: the PLAY DAILY button) being
+     clipped out of a card's visible box on-device despite rendering fine anywhere
+     else. Rounding the line's own corners below costs nothing to replace it. */
 }
 .card::before {
-  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  content: ''; position: absolute; top: 0; left: 12px; right: 12px; height: 1px;
   background: linear-gradient(90deg, transparent, var(--c), transparent);
   opacity: 0.85;
+  border-radius: 1px;
 }
 .daily-card { box-shadow: 0 0 44px hsl(var(--hue) 90% 45% / 0.10); }
 .card-head { display: flex; justify-content: space-between; align-items: baseline; }
