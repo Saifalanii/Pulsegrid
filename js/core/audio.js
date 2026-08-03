@@ -15,6 +15,8 @@ import { clamp } from './math.js';
 // improvising against gameplay intensity rather than a fixed score.
 const SCALE = [0, 3, 5, 7, 10];
 const ROOT = 55; // A1
+const PROGRESSION = [0, -5, -7, -3];   // i - iv - v - bIII-ish, semitone offsets from ROOT
+const BARS_PER_CHORD = 4;              // how many 16-step bars before the chord moves
 
 const midiToFreq = (m) => 440 * Math.pow(2, (m - 69) / 12);
 
@@ -35,6 +37,8 @@ export class AudioEngine {
     this._bpm = 82;
     this._playing = false;
     this._lastSfxAt = new Map(); // crude per-sound rate limit
+    this._totalBars = 0;
+    this._chordIdx = 0;
   }
 
   /** Safe to call repeatedly; only the first user gesture actually resumes. */
@@ -318,31 +322,32 @@ export class AudioEngine {
     }
   }
 
-  _startDrone() {
-    const ctx = this.ctx;
-    const t = ctx.currentTime;
-    this._drone = [];
-    this._droneGains = [];
-    // Two slightly detuned saws + a sine sub = a bed that sits under everything.
-    [[ROOT, 'sawtooth', 0.030, -7], [ROOT, 'sawtooth', 0.030, 7], [ROOT - 12, 'sine', 0.055, 0]]
-      .forEach(([note, type, gain, detune]) => {
-        const osc = ctx.createOscillator();
-        const g = ctx.createGain();
-        const filt = ctx.createBiquadFilter();
-        filt.type = 'lowpass';
-        filt.frequency.value = 420;
-        filt.Q.value = 3;
-        osc.type = type;
-        osc.frequency.value = midiToFreq(note);
-        osc.detune.value = detune;
-        g.gain.setValueAtTime(0.0001, t);
-        g.gain.exponentialRampToValueAtTime(gain, t + 2.0);
-        osc.connect(filt); filt.connect(g); g.connect(this.musicBus);
-        osc.start(t);
-        this._drone.push(osc);
-        this._droneGains.push({ g, filt, base: gain });
-      });
-  }
+ _startDrone() {
+  const ctx = this.ctx;
+  const t = ctx.currentTime;
+  this._drone = [];
+  this._droneGains = [];
+  this._droneOscs = []; // keep refs so we can retune them later
+  [[ROOT, 'sawtooth', 0.030, -7], [ROOT, 'sawtooth', 0.030, 7], [ROOT - 12, 'sine', 0.055, 0]]
+    .forEach(([note, type, gain, detune], i) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      const filt = ctx.createBiquadFilter();
+      filt.type = 'lowpass';
+      filt.frequency.value = 420;
+      filt.Q.value = 1.2;
+      osc.type = type;
+      osc.frequency.value = midiToFreq(note);
+      osc.detune.value = detune;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(gain, t + 2.0);
+      osc.connect(filt); filt.connect(g); g.connect(this.musicBus);
+      osc.start(t);
+      this._drone.push(osc);
+      this._droneOscs.push({ osc, baseOffset: note - ROOT }); // remember interval from root
+      this._droneGains.push({ g, filt, base: gain });
+    });
+}
 
   setIntensity(v) { this._targetIntensity = clamp(v, 0, 1); }
 
@@ -374,10 +379,24 @@ export class AudioEngine {
     }
   }
 
-  _scheduleStep(step, time, I) {
-    const ctx = this.ctx;
-    const delay = Math.max(0, time - ctx.currentTime);
-    const bus = this.musicBus;
+ _scheduleStep(step, time, I) {
+  const ctx = this.ctx;
+  const delay = Math.max(0, time - ctx.currentTime);
+  const bus = this.musicBus;
+
+  if (step === 0) {
+    this._totalBars++;
+    const newChordIdx = Math.floor(this._totalBars / BARS_PER_CHORD) % PROGRESSION.length;
+    if (newChordIdx !== this._chordIdx) {
+      this._chordIdx = newChordIdx;
+      const chordRoot = ROOT + PROGRESSION[this._chordIdx];
+      // Glide the drone to the new chord root instead of jumping
+      this._droneOscs.forEach(({ osc, baseOffset }) => {
+        osc.frequency.setTargetAtTime(midiToFreq(chordRoot + baseOffset), time, 0.6);
+      });
+    }
+  }
+  const chordRoot = ROOT + PROGRESSION[this._chordIdx];
 
     // Sub pulse on the downbeat — present at every intensity, the heartbeat.
     if (step % 8 === 0) {
