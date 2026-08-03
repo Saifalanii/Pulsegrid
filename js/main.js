@@ -111,6 +111,8 @@ class Game {
     };
     window.addEventListener('pointerdown', unlock);
     window.addEventListener('keydown', unlock);
+    window.addEventListener('touchend', unlock); 
+    window.addEventListener('click', unlock); 
 
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Escape') {
