@@ -212,6 +212,18 @@ const RIVAL = {
     'One run a day. That is the arrangement.',
     'I keep the scores. You keep the excuses.',
   ],
+
+  // Announcing a miniboss. Vanta is enjoying this.
+  miniboss: [
+    'Ah. I was wondering when it would wake up.',
+    'This one I built personally. Do try.',
+    'It fractures when hurt. That is the fun part.',
+    'Mind the segments. Or do not. Your run.',
+    'I would step back, if I were capable of caring.',
+    'Finally, something worth watching.',
+    'It has been waiting all run for you.',
+    'Try to make this last more than nine seconds.',
+  ],
 };
 
 // ---------------------------------------------------------------- bag shuffle

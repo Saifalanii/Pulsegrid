@@ -12,7 +12,7 @@ import { juice } from '../fx/juice.js';
 import { audio } from '../core/audio.js';
 import { save } from '../core/save.js';
 import { Palette, HAZARD_RGB, HEAL_RGB, SHARD_RGB, XP_RGB, rgba, trailColor, TIERS } from './palette.js';
-import { ENEMIES, WEAPONS, UPGRADES, ELITE_TIMES, metaStats, xpForLevel } from './defs.js';
+import { ENEMIES, WEAPONS, UPGRADES, ELITE_TIMES, MINIBOSS_TIMES, metaStats, xpForLevel } from './defs.js';
 import { Face } from '../fx/face.js';
 import { coreFor } from './characters.js';
 
@@ -32,7 +32,11 @@ let UID = 1;
 const mkEnemy = () => ({
   uid: 0, def: null, x: 0, y: 0, vx: 0, vy: 0, hp: 1, maxHp: 1, r: 10,
   rot: 0, spin: 0, flash: 0, state: 0, stateT: 0, shootT: 0, summonT: 0,
-  phase: 0, spawnT: 0, elite: false, dmgScale: 1, speedScale: 1, _idx: 0,
+  phase: 0, spawnT: 0, elite: false, dmgScale: 1, speedScale: 1,
+  split: false, shielded: false, parentUid: 0, sweepT: 0,
+  // Lazily created the first time this slot holds a faced enemy, then kept forever.
+  // Allocating per spawn would put object churn straight back into the hot path.
+  face: null, _idx: 0,
 });
 
 const mkBullet = () => ({
@@ -138,6 +142,7 @@ export class Run {
     // Director state
     this.spawnT = 0.9;
     this.eliteIdx = 0;
+    this.minibossIdx = 0;
     this.eliteAlive = 0;
 
     this._seedMotes();
@@ -541,8 +546,23 @@ export class Run {
       this.spawnT = interval * (0.82 + this.rng.next() * 0.36);
       const groupSize = 1 + Math.floor(t / 70) + (this.rng.next() < 0.22 ? 2 : 0);
       const type = this._pickEnemyType();
+      const def = ENEMIES[type];
+      // Pack types override the director's group size — a Mite arriving alone isn't a
+      // swarm, it's a rounding error. Drawn from the wave stream so the pack size is
+      // part of the shared daily pattern.
+      const n = def.packMin
+        ? def.packMin + Math.floor(this.rng.next() * (def.packMax - def.packMin + 1))
+        : groupSize;
       // Groups of one type read much better than a random soup.
-      for (let i = 0; i < groupSize; i++) this._spawnEnemy(type, i, groupSize, null, null, this.rng);
+      for (let i = 0; i < n; i++) this._spawnEnemy(type, i, n, null, null, this.rng);
+    }
+
+    // Minibosses on their own schedule, offset from the elite one so the two never
+    // stack. Also on the wave stream: a shared daily must include the same events.
+    while (this.minibossIdx < MINIBOSS_TIMES.length &&
+           t >= MINIBOSS_TIMES[this.minibossIdx] / m.eliteRate) {
+      this.minibossIdx++;
+      this._spawnMiniboss();
     }
 
     // Elites on a schedule, compressed by the GAUNTLET mutator.
@@ -611,6 +631,12 @@ export class Run {
     e.rot = rot;
     e.spin = def.spin;
     e.flash = 0;
+
+    // Face: reuse this slot's instance if it already has one of the right style.
+    if (def.face) {
+      if (!e.face || e.face.style !== def.face) e.face = new Face(def.face);
+      e.face.lookForward();
+    }
     e.state = 0; e.stateT = 0;
     e.shootT = shootT;
     e.summonT = def.summonEvery || 0;
@@ -619,13 +645,64 @@ export class Run {
     e.elite = !!def.elite;
     e.dmgScale = (1 + tMin * 0.14) * this.mods.enemyDmg;
     e.speedScale = spdScale;
+    // Miniboss phase state, reset per spawn since pool slots are reused.
+    e.split = false;
+    e.shielded = false;
+    e.parentUid = 0;
+    e.sweepT = def.sweepEvery || 0;
 
     // Spawn telegraph: a contracting ring so nothing ever appears on top of you unseen.
     this.particles.ring(e.x, e.y, e.r * 4.5, e.r * 1.1, 0.42, this.palette.enemyBright, 2.5);
     return e;
   }
 
+  /**
+   * Guarantee a pool slot for a scheduled event enemy by evicting the most distant
+   * ordinary enemy.
+   *
+   * Without this, a saturated pool silently swallows the spawn — which is survivable
+   * for a trash mob and completely wrong for a miniboss, the one thing in the run
+   * that's supposed to be an event. Observed in testing: the Tessellator never
+   * appeared at all because 120 Mites had taken every slot.
+   *
+   * Evicts by distance from the player so nothing vanishes on screen, skips elites so
+   * one event can't eat another, and consumes no RNG — the wave stream is untouched,
+   * so this can't desync the shared daily.
+   */
+  _makeRoomForEvent() {
+    if (this.enemies.active < MAX_ENEMIES) return true;
+    const p = this.player;
+    let worstIdx = -1, worstD = -1;
+    for (let i = 0; i < this.enemies.active; i++) {
+      const e = this.enemies.items[i];
+      if (e.elite || e.parentUid) continue;      // never evict an event or its parts
+      const dx = e.x - p.x, dy = e.y - p.y;
+      const d = dx * dx + dy * dy;
+      if (d > worstD) { worstD = d; worstIdx = i; }
+    }
+    if (worstIdx < 0) return false;
+    this.enemies.releaseAt(worstIdx);
+    return true;
+  }
+
+  _spawnMiniboss() {
+    const def = ENEMIES.tessellator;
+    this._makeRoomForEvent();
+    const e = this._spawnEnemy('tessellator', 0, 1, null, null, this.rng);
+    if (!e) return;
+    const tMin = this.time / 60;
+    e.maxHp = e.hp = def.hp * (1 + tMin * 0.42) * this.mods.enemyHp;
+    e.spawnT = 1.6;                    // long telegraph — this is meant to be an event
+    this.eliteAlive++;
+    this.particles.ring(e.x, e.y, 40, 420, 1.4, HAZARD_RGB, 8);
+    juice.addShake(12);
+    juice.addFlash(0.18);
+    audio.tierShift();
+    this.onMinibossSpawn?.(def);
+  }
+
   _spawnElite() {
+    this._makeRoomForEvent();
     const e = this._spawnEnemy('warden', 0, 1, null, null, this.rng);
     if (!e) return;
     const tMin = this.time / 60;
@@ -655,6 +732,15 @@ export class Run {
 
       e.flash = Math.max(0, e.flash - dt * 6);
       e.rot += e.spin * dt;
+
+      if (e.face) {
+        // Always watching you. Startle on taking a hit; narrow the eyes while winding
+        // up an attack, so the tell is on the face as well as the body.
+        e.face.lookAt(p.x - e.x, p.y - e.y);
+        if (e.flash > 0.6) e.face.startle(0.7);
+        if (e.state === 1 || (def.shootEvery && e.shootT < 0.35)) e.face.focus(1);
+        e.face.update(dt);
+      }
 
       const dx = p.x - e.x, dy = p.y - e.y;
       const d = Math.hypot(dx, dy) || 1;
@@ -724,11 +810,70 @@ export class Run {
           this._enemyShoot(e, dt, def, nx, ny, def.burst || 1);
           break;
         }
+
+        case 'swarm': {
+          // Heads for the player but with a wandering perpendicular wobble whose phase
+          // and rate differ per individual. A pack therefore arrives as a spreading
+          // cloud instead of a single stacked column, and can't be led like one target.
+          e.phase += dt * (5.5 + (e.uid % 7) * 0.6);
+          const px = -ny, py = nx;
+          const wob = Math.sin(e.phase) * speed * 0.75;
+          e.vx = damp(e.vx, nx * speed + px * wob, 7, dt);
+          e.vy = damp(e.vy, ny * speed + py * wob, 7, dt);
+          break;
+        }
+
+        case 'lunge': {
+          // Deliberately generous tells: a long wind-up where it stops dead and spins
+          // up, then a committed dash it cannot steer out of. Always dodgeable.
+          e.stateT -= dt;
+          if (e.state === 0) {
+            e.vx = damp(e.vx, nx * speed, 2.5, dt);
+            e.vy = damp(e.vy, ny * speed, 2.5, dt);
+            if (d < def.lungeRange) { e.state = 1; e.stateT = def.windup; }
+          } else if (e.state === 1) {
+            e.vx = damp(e.vx, 0, 9, dt);
+            e.vy = damp(e.vy, 0, 9, dt);
+            e.spin = 11;
+            if (e.stateT <= 0) {
+              e.state = 2; e.stateT = def.lungeTime;
+              e.vx = nx * def.lungeSpeed * this.mods.enemySpeed;
+              e.vy = ny * def.lungeSpeed * this.mods.enemySpeed;
+              this.particles.burst(e.x, e.y, 14, 240, HAZARD_RGB, { life: 0.4, size: 3.4 });
+              juice.addShake(2.5);
+            }
+          } else if (e.state === 2) {
+            if (e.stateT <= 0) { e.state = 3; e.stateT = def.restTime; e.spin = def.spin; }
+          } else {
+            e.vx = damp(e.vx, 0, 4, dt);
+            e.vy = damp(e.vy, 0, 4, dt);
+            if (e.stateT <= 0) e.state = 0;
+          }
+          break;
+        }
+
+        case 'orbitParent': {
+          // Tessera ride a circle around their Tessellator. If the parent is somehow
+          // gone (killed by a nova in the same frame), they release and charge instead
+          // of freezing in place around nothing.
+          const par = this._findByUid(e.parentUid);
+          if (!par) {
+            e.def = ENEMIES.shardling;   // becomes an ordinary chaser
+            e.parentUid = 0;
+            break;
+          }
+          e.phase += dt * def.orbitRate;
+          const tx = par.x + Math.cos(e.phase) * def.orbitDist;
+          const ty = par.y + Math.sin(e.phase) * def.orbitDist;
+          // Positioned rather than steered: these are parts of a machine, not chasers.
+          e.vx = (tx - e.x) * 9;
+          e.vy = (ty - e.y) * 9;
+          break;
+        }
       }
 
-      if (e.elite) {
-        this._eliteBehavior(e, dt, def, nx, ny);
-      }
+      if (def.miniboss) this._minibossBehavior(e, dt, def, nx, ny);
+      else if (e.elite) this._eliteBehavior(e, dt, def, nx, ny);
 
       e.x += e.vx * dt;
       e.y += e.vy * dt;
@@ -791,6 +936,88 @@ export class Run {
     }
   }
 
+  /** Linear scan by uid. Only ever called for the handful of Tessera on screen. */
+  _findByUid(uid) {
+    if (!uid) return null;
+    for (let i = 0; i < this.enemies.active; i++) {
+      if (this.enemies.items[i].uid === uid) return this.enemies.items[i];
+    }
+    return null;
+  }
+
+  /**
+   * Tessellator. Two phases:
+   *   1. Standoff shooting (handled by the normal 'standoff' case) plus a telegraphed
+   *      radial sweep on a slower cycle.
+   *   2. At splitAt health it fractures — three Tessera peel off and orbit it, and it
+   *      armours itself until they're dead. Ignoring the segments is a losing play.
+   */
+  _minibossBehavior(e, dt, def, nx, ny) {
+    // --- phase change ---
+    if (!e.split && e.hp <= e.maxHp * def.splitAt) {
+      e.split = true;
+      e.shielded = true;
+      const orbit = ENEMIES[def.segment].orbitDist;
+      for (let k = 0; k < def.segmentCount; k++) {
+        const a = (k / def.segmentCount) * TAU;
+        // Same reasoning as the boss itself — a segment lost to a full pool would
+        // quietly weaken the phase. (If they all fail the shield simply drops on the
+        // next frame, so the worst case degrades gracefully rather than soft-locking.)
+        this._makeRoomForEvent();
+        const seg = this._spawnEnemy(def.segment, 0, 1,
+          e.x + Math.cos(a) * orbit, e.y + Math.sin(a) * orbit, this.rngAux);
+        if (seg) {
+          seg.parentUid = e.uid;
+          seg.phase = a;
+          seg.spawnT = 0.3;
+        }
+      }
+      this.particles.ring(e.x, e.y, e.r, e.r * 7, 0.8, HAZARD_RGB, 6);
+      this.particles.burst(e.x, e.y, 40, 330, HAZARD_RGB, { life: 0.8, size: 4 });
+      audio.bigDeath();
+      juice.bigKill();
+      this.onMinibossSplit?.(def);
+    }
+
+    // Shield drops the moment the last segment dies.
+    if (e.shielded) {
+      let alive = false;
+      for (let i = 0; i < this.enemies.active; i++) {
+        if (this.enemies.items[i].parentUid === e.uid) { alive = true; break; }
+      }
+      if (!alive) {
+        e.shielded = false;
+        this.particles.ring(e.x, e.y, e.r * 3, e.r, 0.5, this.palette.accent, 5);
+        audio.levelUp();
+      }
+    }
+
+    // --- telegraphed radial sweep ---
+    e.sweepT -= dt;
+    if (e.sweepT <= 0 && e.state !== 9) {
+      e.state = 9;                       // winding up; the draw pass shows the tell
+      e.stateT = def.sweepWindup;
+    }
+    if (e.state === 9) {
+      e.stateT -= dt;
+      e.vx = damp(e.vx, 0, 7, dt);
+      e.vy = damp(e.vy, 0, 7, dt);
+      if (e.stateT <= 0) {
+        e.state = 0;
+        e.sweepT = def.sweepEvery;
+        const base = this.rngAux.angle();
+        for (let k = 0; k < def.sweepCount; k++) {
+          const a = base + (k / def.sweepCount) * TAU;
+          this._spawnEBullet(e.x + Math.cos(a) * e.r, e.y + Math.sin(a) * e.r,
+                             Math.cos(a) * def.sweepSpeed, Math.sin(a) * def.sweepSpeed,
+                             def.sweepDmg * e.dmgScale);
+        }
+        this.particles.ring(e.x, e.y, e.r, e.r * 5, 0.6, HAZARD_RGB, 5);
+        juice.addShake(7);
+      }
+    }
+  }
+
   _enemyShoot(e, dt, def, nx, ny, burst) {
     e.shootT -= dt;
     if (e.shootT > 0) return;
@@ -814,7 +1041,16 @@ export class Run {
 
   _hurtEnemy(e, index, dmg, isCrit) {
     const def = e.def;
-    const effective = def.armor ? Math.max(dmg * 0.25, dmg - def.armor) : dmg;
+    let effective = def.armor ? Math.max(dmg * 0.25, dmg - def.armor) : dmg;
+    // Miniboss armours itself while its segments live — see _minibossBehavior.
+    if (e.shielded) {
+      effective *= def.shieldedDamageMul ?? 0.15;
+      // Visibly bounce off, or the reduction just reads as the game ignoring your hits.
+      if (Math.random() < 0.4) {
+        this.particles.spark(e.x, e.y, (Math.random() - 0.5) * 180, (Math.random() - 0.5) * 180,
+                             0.25, 2.5, this.palette.accent);
+      }
+    }
     e.hp -= effective;
     e.flash = 1;
 
@@ -1184,6 +1420,55 @@ export class Run {
         r.glowCircle(e.x, e.y, e.r + 6 + t * 14, HAZARD_RGB, 1.5, 0.9, 0);
       }
 
+      // Maw lunge tell: a contracting ring plus a line showing exactly where it will
+      // go. The line is the important half — a ring alone says "something", a line
+      // says "not here".
+      if (def.behavior === 'lunge' && e.state === 1) {
+        const t = 1 - e.stateT / def.windup;
+        r.glowCircle(e.x, e.y, e.r + 26 - t * 20, HAZARD_RGB, 2 + t * 2, 1, 0);
+        const dx = this.player.x - e.x, dy = this.player.y - e.y;
+        const l = Math.hypot(dx, dy) || 1;
+        ctx.globalAlpha = 0.30 + t * 0.45;
+        r.glowStreak(e.x + (dx / l) * (e.r + 8 + t * 220), e.y + (dy / l) * (e.r + 8 + t * 220),
+                     dx, dy, 40 + t * 190, 3, HAZARD_RGB, 1);
+        ctx.globalAlpha = 1;
+      }
+
+      // Miniboss radial-sweep wind-up: an expanding ring of tick marks so you can
+      // read both that it's coming and how long you have.
+      if (e.state === 9 && def.sweepWindup) {
+        const t = 1 - e.stateT / def.sweepWindup;
+        r.glowCircle(e.x, e.y, e.r + 10 + t * 90, HAZARD_RGB, 1.5 + t * 2.5, 1, 0);
+        const ticks = 12;
+        ctx.globalAlpha = 0.5 + t * 0.5;
+        for (let k = 0; k < ticks; k++) {
+          const a = (k / ticks) * TAU + this.time * 0.6;
+          const rr2 = e.r + 10 + t * 90;
+          r.glowOrb(e.x + Math.cos(a) * rr2, e.y + Math.sin(a) * rr2, 3 + t * 3, HAZARD_RGB, 1);
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      // Miniboss shield: a counter-rotating hex cage, so "you can't hurt this yet"
+      // is legible without reading a health bar that isn't moving.
+      if (e.shielded) {
+        const pulse = 1 + Math.sin(this.time * 6) * 0.06;
+        r.glowPoly(e.x, e.y, (e.r + 16) * pulse, 6, -e.rot * 2.2, this.palette.accent, 2.4, 1, 0.05);
+        r.glowPoly(e.x, e.y, (e.r + 22) * pulse, 6, e.rot * 1.6, this.palette.accent, 1.2, 0.7, 0);
+      }
+
+      // Tessera tether — makes the parent/segment relationship explicit.
+      if (e.parentUid) {
+        const par = this._findByUid(e.parentUid);
+        if (par) {
+          ctx.globalAlpha = 0.28;
+          ctx.lineWidth = 1.6;
+          ctx.strokeStyle = rgba(HAZARD_RGB, 0.8);
+          ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(par.x, par.y); ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+      }
+
       // Health arc for anything meaningfully tanky.
       if (e.maxHp > 40 && hpFrac < 0.999) {
         const hr = rr + 9;
@@ -1319,10 +1604,31 @@ export class Run {
    * this only changes *when* it's drawn relative to bloom, not where.
    */
   drawFaceOverlay(r) {
-    if (!this._playerVisible()) return;
     const p = this.player;
+    const showPlayer = this._playerVisible();
+
+    // One transform push for every face in the scene — player and enemies alike — so
+    // the post-bloom pass costs a single save/restore rather than one per character.
     r.withWorldTransform(juice, (ctx) => {
-      this.face.draw(ctx, p.x, p.y + p.r * 0.06, p.r * 1.9, this.core.pupilRgb);
+      // Measured at ~81us per face: each one is a source-over pass with two rounded-rect
+      // fills and two arc fills, which breaks the batched additive entity pass. That's
+      // fine at the 10-15 faced enemies real play produces (~1ms), but the cap bounds a
+      // pathological spawn from spending the whole frame budget on eyeballs. Elites are
+      // exempt — losing a miniboss's face to a crowd of Bulwarks would be backwards.
+      let budget = 20;
+      for (let i = 0; i < this.enemies.active; i++) {
+        const e = this.enemies.items[i];
+        if (!e.face || e.spawnT > 0) continue;
+        if (!e.elite && budget <= 0) continue;
+        // Cull off-screen faces: the sockets are opaque fills, and at 100+ enemies the
+        // ones outside the view are pure waste.
+        if (!r.inView(e.x, e.y, e.r * 3)) continue;
+        if (!e.elite) budget--;
+        e.face.draw(ctx, e.x, e.y, e.r * 1.55, e.elite ? HAZARD_RGB : this.palette.enemyBright);
+      }
+      if (showPlayer) {
+        this.face.draw(ctx, p.x, p.y + p.r * 0.06, p.r * 1.9, this.core.pupilRgb);
+      }
     });
   }
 

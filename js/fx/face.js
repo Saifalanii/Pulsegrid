@@ -25,6 +25,21 @@ export const EYE_STYLES = {
   calm:   { w: 0.34, h: 0.22, gap: 0.33, y:  0.00, round: 0.50, tilt: -0.06, pupil: 0.40 },
   // The rival: tall, narrow, unimpressed.
   smug:   { w: 0.24, h: 0.34, gap: 0.36, y: -0.03, round: 0.35, tilt: -0.20, pupil: 0.36 },
+
+  // --- enemies ---
+  // Only used on large enemies (see ENEMIES[].face). At the 18-26px most enemies render
+  // at, eye sockets land around 3px and read as noise rather than character, so the
+  // small roster stays faceless on purpose.
+  //
+  // Strong inward tilt is doing the work here: a downward-angled inner corner is the
+  // single most legible "hostile" cue at small sizes, more so than shape or pupil.
+  angry:  { w: 0.27, h: 0.26, gap: 0.34, y: -0.01, round: 0.22, tilt: -0.42, pupil: 0.30 },
+  // Wide, perfectly round, no tilt. Reads as unsettling rather than aggressive —
+  // for the Warden, which should feel like it isn't really looking *at* you.
+  blank:  { w: 0.30, h: 0.30, gap: 0.36, y: -0.02, round: 0.50, tilt: 0, pupil: 0.26 },
+  // Asymmetric squint for the miniboss: one eye narrower than the other reads as
+  // appraising you. Implemented via `skew`, applied to the right eye only.
+  cruel:  { w: 0.28, h: 0.30, gap: 0.35, y: -0.02, round: 0.28, tilt: -0.30, pupil: 0.32, skew: 0.45 },
 };
 
 export class Face {
@@ -136,21 +151,24 @@ export class Face {
       const ex = x + dir * gap;
       // Inner corners drop when squinting -> a focused, slightly mean look.
       const tilt = (s.tilt + this.squint * 0.34) * dir;
+      // `skew` narrows one eye only (see the 'cruel' style) — asymmetry reads as
+      // appraising rather than merely angry.
+      const h = (s.skew && i === 1) ? eyeH * (1 - s.skew) : eyeH;
 
       ctx.save();
       ctx.translate(ex, cy);
       ctx.rotate(tilt);
 
-      if (eyeH > 0.6) {
+      if (h > 0.6) {
         ctx.fillStyle = VOID;
-        roundedRect(ctx, -eyeW / 2, -eyeH / 2, eyeW, eyeH, Math.min(eyeW, eyeH) * s.round);
+        roundedRect(ctx, -eyeW / 2, -h / 2, eyeW, h, Math.min(eyeW, h) * s.round);
         ctx.fill();
 
         // Pupil: bright, offset by gaze, clamped inside the socket so it never escapes.
-        const pr = Math.min(eyeW, eyeH) * s.pupil;
+        const pr = Math.min(eyeW, h) * s.pupil;
         if (pr > 0.4) {
           const maxX = Math.max(0, eyeW / 2 - pr - 0.6);
-          const maxY = Math.max(0, eyeH / 2 - pr - 0.6);
+          const maxY = Math.max(0, h / 2 - pr - 0.6);
           ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
           ctx.beginPath();
           ctx.arc(this.lookX * maxX, this.lookY * maxY, pr, 0, TAU);

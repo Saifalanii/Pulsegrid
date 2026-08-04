@@ -113,6 +113,12 @@ export class Renderer {
   /** Effective world->screen scale, including the slow danger zoom. */
   get scale() { return this.baseScale * this.zoomBias; }
 
+  /** Cheap world-space frustum test, with `pad` world units of slack. */
+  inView(wx, wy, pad = 0) {
+    const hw = this.viewW / 2 + pad, hh = this.viewH / 2 + pad;
+    return Math.abs(wx - this.camX) <= hw && Math.abs(wy - this.camY) <= hh;
+  }
+
   get viewW() { return this.w / this.scale; }
   get viewH() { return this.h / this.scale; }
 

@@ -15,7 +15,7 @@ import { makeRunConfig } from './game/daily.js';
 import { UI } from './ui/screens.js';
 import { todayKey } from './core/rng.js';
 import { voice } from './game/voice.js';
-import { coreFor } from './game/characters.js';
+import { coreFor, RIVAL } from './game/characters.js';
 
 const STEP = 1 / 120;
 const MAX_FRAME = 0.25;   // never simulate more than a quarter second after a tab stall
@@ -218,6 +218,16 @@ class Game {
     this.run.onTierChange = (tier) => { this.ui.banner(tier.name); say('tierShift'); };
     this.run.onEliteSpawn = () => this.ui.banner('WARDEN INBOUND');
     this.run.onEliteKilled = () => say('eliteKill');
+    this.run.onMinibossSpawn = (def) => {
+      // The rival announces minibosses — reuses the existing voice channel, and gives
+      // the event a named author instead of an anonymous banner.
+      this.ui.banner(def.name);
+      setTimeout(() => this.ui.say(RIVAL.name, voice.rival('miniboss'), 'eliteKill', true), 900);
+    };
+    this.run.onMinibossSplit = () => {
+      this.ui.banner('IT SPLIT');
+      say('eliteKill');
+    };
     this.run.onRevive = () => { this.ui.banner('SECOND CORE'); say('nearDeath'); };
     this.run.onHurt = () => {
       // Below a quarter integrity the character stops joking about the hit and starts

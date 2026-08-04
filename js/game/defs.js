@@ -41,23 +41,87 @@ export const ENEMIES = {
   bulwark: {
     name: 'Bulwark', shape: 6, r: 27, hp: 78, speed: 42, dmg: 17,
     xp: 5, score: 55, behavior: 'chase', spin: -0.7, weight: 30, minTime: 100,
-    armor: 2,
+    armor: 2, face: 'angry',
   },
   lancer: {
     name: 'Lancer', shape: 8, r: 21, hp: 46, speed: 26, dmg: 13,
     xp: 4, score: 44, behavior: 'standoff', spin: 1.4, weight: 26, minTime: 130,
     standoffRange: 330, shootEvery: 1.55, burst: 3, bulletSpeed: 260, bulletDmg: 11,
   },
+  // --- swarm ---
+  // Fast, fragile, and always in a pack. Jitters instead of tracking cleanly, so a
+  // group reads as a cloud you have to sweep rather than a line you can lead.
+  mite: {
+    name: 'Mite', shape: 3, r: 8, hp: 5, speed: 196, dmg: 5,
+    xp: 1, score: 9, behavior: 'swarm', spin: 9.0, weight: 42, minTime: 70,
+    packMin: 6, packMax: 9,
+  },
+
+  // --- bruiser ---
+  // Slow, enormous contact damage, and a long visible wind-up before it lunges. The
+  // whole point is that it is always avoidable if you're paying attention.
+  maw: {
+    name: 'Maw', shape: 6, r: 32, hp: 150, speed: 30, dmg: 28,
+    xp: 8, score: 90, behavior: 'lunge', spin: -0.4, weight: 22, minTime: 150,
+    armor: 3, face: 'angry',
+    windup: 0.95, lungeSpeed: 620, lungeTime: 0.55, restTime: 1.5, lungeRange: 380,
+  },
+
+  // --- miniboss segment ---
+  // Spawned only by the Tessellator; never rolled by the director.
+  tessera: {
+    name: 'Tessera', shape: 4, r: 14, hp: 95, speed: 0, dmg: 14,
+    xp: 6, score: 70, behavior: 'orbitParent', spin: 4.0, weight: 0, minTime: 0,
+    orbitDist: 92, orbitRate: 1.5,
+  },
+
   warden: {
     name: 'Warden', shape: 6, r: 44, hp: 620, speed: 46, dmg: 24,
     xp: 40, score: 600, behavior: 'chase', spin: 0.55, weight: 0, minTime: 0,
     elite: true, shootEvery: 2.6, radialCount: 12, bulletSpeed: 175, bulletDmg: 14,
-    summon: 'drifter', summonCount: 4, summonEvery: 6.5,
+    summon: 'drifter', summonCount: 4, summonEvery: 6.5, face: 'blank',
+  },
+
+  // --- miniboss ---
+  //
+  // The repetition-breaker. Not just a bigger enemy: at half health it fractures into
+  // three orbiting Tessera and armours itself, so the fight has a readable two-phase
+  // shape — chip it down, then deal with the segments before you can hurt it again.
+  tessellator: {
+    name: 'TESSELLATOR', shape: 6, r: 38, hp: 900, speed: 52, dmg: 22,
+    xp: 55, score: 900, behavior: 'standoff', spin: 0.9, weight: 0, minTime: 0,
+    elite: true, miniboss: true, face: 'cruel',
+    standoffRange: 260, shootEvery: 2.0, burst: 5, bulletSpeed: 210, bulletDmg: 12,
+    // Phase change.
+    splitAt: 0.5, segment: 'tessera', segmentCount: 3,
+    // Damage taken while its segments are still alive. Low enough to make ignoring
+    // them a losing play, not so low that it feels like a scripted wait.
+    shieldedDamageMul: 0.15,
+    // Telegraphed radial sweep, fired on a slower cycle than the aimed burst.
+    sweepEvery: 5.5, sweepWindup: 1.0, sweepCount: 20, sweepSpeed: 165, sweepDmg: 13,
   },
 };
 
+/**
+ * Which enemies render a face.
+ *
+ * Deliberately only the large ones. At the 11-21px most of the roster draws at, the eye
+ * sockets land around 3px — they read as visual noise, not character — and each face is
+ * a source-over pass that breaks the single batched additive entity pass, which is the
+ * exact cost that had to be optimised away earlier. Restricting faces to enemies big
+ * enough to actually show them keeps both the readability and the frame budget.
+ */
+export const FACED_ENEMIES = Object.keys(ENEMIES).filter((k) => !!ENEMIES[k].face);
+
 /** Elites arrive on a timer, not a wave counter, so the pressure is predictable. */
 export const ELITE_TIMES = [95, 190, 285, 375, 460, 540];
+
+/**
+ * Miniboss schedule, deliberately offset from ELITE_TIMES so the two never land
+ * together. A typical 3-6 minute run meets one or two — enough to be an event, not
+ * enough to become the routine.
+ */
+export const MINIBOSS_TIMES = [200, 400, 600];
 
 // ---------------------------------------------------------------- weapons
 
