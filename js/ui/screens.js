@@ -242,7 +242,10 @@ export class UI {
     click('btn-quit', () => g.abandon());
     click('btn-pause-settings', () => { this._settingsReturn = 'pause'; this.show('settings'); });
 
-    click('btn-again', () => g.openBrief(g.lastMode));
+    // After a Daily, "again" can only mean Practice — the attempt is spent. Falling
+    // through to openBrief('daily') would just bounce off its guard with a toast,
+    // which reads as a broken button rather than a deliberate rule.
+    click('btn-again', () => g.openBrief(g.lastMode === 'daily' && save.dailyLocked() ? 'practice' : g.lastMode));
     click('btn-menu', () => this.show('menu'));
     click('btn-go-shop', () => { this._shopReturn = 'gameover'; this.show('shop'); });
 
@@ -289,11 +292,32 @@ export class UI {
     $('daily-mutator-desc').textContent = mut.desc;
     $('menu-shards').textContent = save.data.shards.toLocaleString();
 
+    // --- daily lock ---
+    // Three states, not two: unplayed, played-and-finished (we have a score to show),
+    // and spent-without-a-score (started then quit, or force-quit mid-run). The last
+    // one still consumes the attempt, so it needs its own copy rather than falling
+    // through to "—" and looking like a bug.
     const todayRun = save.dailyScore(today);
-    $('daily-best').textContent = todayRun ? todayRun.score.toLocaleString() : '—';
-    $('daily-note').textContent = todayRun
-      ? 'Already played. Replays update your score but the streak is locked in.'
-      : "Everyone gets this exact run today.";
+    const locked = save.dailyLocked(today);
+    const btn = $('btn-daily');
+    const label = $('daily-best-label');
+
+    $('daily-best').textContent = todayRun ? todayRun.score.toLocaleString() : (locked ? 'NO SCORE' : '—');
+    if (label) label.textContent = locked ? "TODAY'S RESULT" : 'YOUR BEST TODAY';
+
+    btn.disabled = locked;
+    btn.classList.toggle('done', locked);
+    btn.textContent = locked ? 'DAILY COMPLETE' : 'PLAY DAILY';
+
+    if (!locked) {
+      $('daily-note').textContent = 'Everyone gets this exact run today. One attempt.';
+    } else if (todayRun) {
+      $('daily-note').textContent =
+        `Survived ${formatTime(todayRun.time)} · ${todayRun.kills} kills. Next Daily unlocks in the countdown above.`;
+    } else {
+      $('daily-note').textContent =
+        'Attempt used. Practice runs are unlimited — the Daily returns tomorrow.';
+    }
 
     // Streak block.
     const st = save.streakStatus(today);
@@ -498,6 +522,10 @@ export class UI {
   showGameOver(res, streakResult, snapshot = {}) {
     $('go-mode').textContent = res.isDaily ? `DAILY RUN — ${res.date}` : 'PRACTICE RUN';
     $('go-score').textContent = res.score.toLocaleString();
+
+    // Label the retry button for what it will actually do (see its click handler).
+    $('btn-again').textContent =
+      (res.isDaily && save.dailyLocked()) ? 'PRACTICE RUN' : 'RUN AGAIN';
 
     const prevBest = snapshot.priorBest ?? (res.isDaily ? save.data.bestDailyScore : save.data.bestPracticeScore);
     const isBest = res.score > 0 && res.score >= prevBest;

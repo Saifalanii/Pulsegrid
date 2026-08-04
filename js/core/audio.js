@@ -262,11 +262,30 @@ export class AudioEngine {
 
   // ---------------------------------------------------------------- SFX
 
+  /**
+   * Hit-marker style tick. Fires on every shot, several times a second, for minutes —
+   * so it's built to disappear into the mix rather than punch through it.
+   *
+   * The old version swept a triangle 760 -> 300Hz over 85ms at gain 0.12. Two separate
+   * problems: the sweep *descends into the low-mids*, which is where ear fatigue and
+   * "buzzy/grating" live, and 85ms is long enough that consecutive shots overlap into a
+   * continuous tone instead of reading as discrete taps. This is ~38ms, sits up at
+   * 2-4kHz where the ear reads "click" rather than "tone", and peaks at roughly a third
+   * of the old gain — well under hit() (0.10) and enemyDeath() (0.16), so impacts still
+   * clearly outrank the act of firing.
+   */
   shoot(pitch = 1) {
     if (this._throttle('shoot', 34)) return;
-    this._tone({ type: 'triangle', freq: 760 * pitch, toFreq: 300 * pitch, dur: 0.085, gain: 0.12, attack: 0.002 });
-    this._tone({ type: 'triangle', freq: 1500 * pitch, toFreq: 700 * pitch, dur: 0.05, gain: 0.022 });
-    this._noiseHit({ dur: 0.045, gain: 0.03, freq: 2000, sweepTo: 800, q: 0.9 });
+    // Small per-shot pitch jitter. Without it, a fixed-frequency tick repeating at a
+    // steady fire rate fuses into a single droning pitch — the machine-gun-drill effect.
+    const j = 0.94 + Math.random() * 0.12;
+    const p = pitch * j;
+
+    // Transient: a tight band of noise high in the spectrum. This is the "tk".
+    this._noiseHit({ dur: 0.026, gain: 0.05, freq: 3600 * p, sweepTo: 2300 * p, q: 2.4, type: 'bandpass' });
+    // Body: a very short high sine so the tick has definite pitch and feels intentional
+    // rather than like a burst of static. Kept above ~1.5kHz to stay out of the mud.
+    this._tone({ type: 'sine', freq: 2200 * p, toFreq: 1600 * p, dur: 0.038, gain: 0.038, attack: 0.001 });
   }
 
   hit() {

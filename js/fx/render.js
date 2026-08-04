@@ -38,7 +38,11 @@ export class Renderer {
     this.bloomDiv = 4;
 
     this.camX = 0; this.camY = 0;
-    this.scale = 1;
+    this.baseScale = 1;
+    // Slow danger zoom, driven by updateCamera(). Kept as a multiplier on baseScale
+    // rather than a separate transform so that viewW/viewH — and therefore the camera
+    // clamping and the grid's draw extents — stay consistent with what's on screen.
+    this.zoomBias = 1;
     this.w = 0; this.h = 0;      // css px
     this.dpr = 1;
 
@@ -73,7 +77,7 @@ export class Renderer {
 
     // World-units-visible: keeps the player a consistent physical size across devices.
     const minDim = Math.min(cssW, cssH);
-    this.scale = clamp(minDim / 480, 0.5, 1.7);
+    this.baseScale = clamp(minDim / 480, 0.5, 1.7);
 
     this._vignette = null;
     this._dmgVignette = null;
@@ -106,13 +110,30 @@ export class Renderer {
     return out;
   }
 
+  /** Effective world->screen scale, including the slow danger zoom. */
+  get scale() { return this.baseScale * this.zoomBias; }
+
   get viewW() { return this.w / this.scale; }
   get viewH() { return this.h / this.scale; }
 
-  /** Follow the player, clamped so the camera never shows outside the arena. */
-  updateCamera(targetX, targetY, arena, dt, lead = { x: 0, y: 0 }) {
+  /**
+   * Follow the player, clamped so the camera never shows outside the arena.
+   *
+   * @param {number} intensity 0..1 danger level; drives a slow zoom-in so the frame
+   *   tightens as things get hairy. Separate from juice.zoom, which is the sharp
+   *   per-impact punch — this is the slow one you feel rather than see.
+   */
+  updateCamera(targetX, targetY, arena, dt, lead = { x: 0, y: 0 }, intensity = 0) {
     const vw = this.viewW, vh = this.viewH;
-    let tx = targetX + lead.x, ty = targetY + lead.y;
+
+    // Very slow lissajous drift. Amplitude is a few world units — far too small to
+    // fight the player for control of the framing, but enough that a held-still camera
+    // never looks frozen. Two incommensurate periods so it doesn't visibly loop.
+    this._driftT = (this._driftT || 0) + dt;
+    const dxDrift = Math.sin(this._driftT * 0.23) * 7 + Math.sin(this._driftT * 0.61) * 2.5;
+    const dyDrift = Math.cos(this._driftT * 0.19) * 6 + Math.cos(this._driftT * 0.47) * 2.0;
+
+    let tx = targetX + lead.x + dxDrift, ty = targetY + lead.y + dyDrift;
 
     if (arena.w > vw) tx = clamp(tx, arena.x + vw / 2, arena.x + arena.w - vw / 2);
     else tx = arena.x + arena.w / 2;
@@ -122,6 +143,11 @@ export class Renderer {
     const k = 1 - Math.exp(-9 * dt);
     this.camX += (tx - this.camX) * k;
     this.camY += (ty - this.camY) * k;
+
+    // Danger zoom: up to +6% at full intensity, eased over ~2s so it never snaps.
+    // Applied to `scale` via zoomBias, which resize() re-reads.
+    const wantBias = 1 + intensity * 0.06;
+    this.zoomBias += (wantBias - this.zoomBias) * (1 - Math.exp(-0.9 * dt));
   }
 
   snapCamera(x, y) { this.camX = x; this.camY = y; }
@@ -148,31 +174,40 @@ export class Renderer {
   withWorldTransform(juice, fn) {
     const ctx = this.ctx;
     ctx.save();
+    this._applyWorldTransform(juice);
+    fn(ctx);
+    ctx.restore();
+  }
+
+  /**
+   * Sets the camera/shake/zoom transform from scratch (resets any existing transform
+   * first). Single source of truth — begin(), withWorldTransform() and the background
+   * pass all route through here, so they can't drift apart the way worldToScreen()
+   * once did.
+   */
+  _applyWorldTransform(juice) {
+    const ctx = this.ctx;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     const z = this.scale * juice.zoom;
     ctx.translate(this.canvas.width / 2, this.canvas.height / 2);
     ctx.rotate(juice.rot);
     ctx.scale(z * this.dpr, z * this.dpr);
     ctx.translate(-this.camX + juice.ox / z, -this.camY + juice.oy / z);
-    fn(ctx);
-    ctx.restore();
   }
 
   begin(palette, juice) {
     const ctx = this.ctx;
     const { width, height } = this.canvas;
+    // Stashed so drawBackground() can restore the world transform after its
+    // screen-space ambient wash without needing juice threaded through every caller.
+    this._lastJuice = juice;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1;
     ctx.fillStyle = palette.css.bg;
     ctx.fillRect(0, 0, width, height);
 
-    // Camera transform, including shake + zoom punch.
-    const z = this.scale * juice.zoom;
-    ctx.translate(width / 2, height / 2);
-    ctx.rotate(juice.rot);
-    ctx.scale(z * this.dpr, z * this.dpr);
-    ctx.translate(-this.camX + juice.ox / z, -this.camY + juice.oy / z);
+    this._applyWorldTransform(juice);
   }
 
   end(palette, juice) {
@@ -301,31 +336,92 @@ export class Renderer {
 
   // ------------------------------------------------------------ background
 
-  drawBackground(palette, arena, time) {
+  /**
+   * Ambient floor light — a broad radial wash sitting under everything, so the void
+   * isn't dead flat black.
+   *
+   * Drawn in *screen* space with a cached gradient. Cached because
+   * createRadialGradient() allocates, and this covers the whole canvas every frame;
+   * rebuilt only when the size or the tier hue changes, which is at most once every
+   * 55 seconds rather than 60 times a second.
+   */
+  _ambientWash(palette) {
+    const ctx = this.ctx;
+    const W = this.canvas.width, H = this.canvas.height;
+    const key = `${W}x${H}|${Math.round(palette.hue)}`;
+    if (this._washKey !== key) {
+      const g = ctx.createRadialGradient(W / 2, H * 0.46, 0, W / 2, H * 0.46, Math.max(W, H) * 0.62);
+      g.addColorStop(0, rgba(palette.bgGrid, 0.20));
+      g.addColorStop(0.45, rgba(palette.bgGrid, 0.085));
+      g.addColorStop(1, rgba(palette.bgGrid, 0));
+      this._wash = g;
+      this._washKey = key;
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = this._wash;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  /**
+   * Parallax depth grid.
+   *
+   * Judgment call, flagged: the brief asked for a tilted/receding perspective grid with
+   * a horizon. A literal horizon can't work here — this is a top-down camera over a
+   * bounded arena, and a vanishing point would put the grid in a different space from
+   * the entities standing on it, so the floor would visibly slide against the enemies
+   * walking on it. Instead this gets depth the way a top-down game honestly can: three
+   * grid layers at different simulated depths, each parallaxing against the camera by a
+   * different factor and fading with distance. Nearer layers are brighter, wider-spaced
+   * and track the camera 1:1; deeper layers are dimmer, denser and lag behind. That
+   * produces real motion parallax — the strongest depth cue available — without lying
+   * about where the floor is.
+   */
+  _depthGrid(palette, time) {
     const ctx = this.ctx;
     const vw = this.viewW, vh = this.viewH;
-    const l = this.camX - vw / 2 - 60, r = this.camX + vw / 2 + 60;
-    const t = this.camY - vh / 2 - 60, b = this.camY + vh / 2 + 60;
-
-    // Two grid layers at different scales; the finer one breathes with time.
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.lineWidth = 1 / this.scale;
     const pulse = 0.5 + Math.sin(time * 0.7) * 0.12;
 
-    ctx.strokeStyle = rgba(palette.bgGrid, 0.20 * pulse);
-    this._grid(ctx, l, t, r, b, 64);
-    ctx.strokeStyle = rgba(palette.bgGrid, 0.34);
-    ctx.lineWidth = 1.6 / this.scale;
-    this._grid(ctx, l, t, r, b, 256);
+    // [spacing, parallax factor, alpha, lineWidth]
+    // parallax 1 = locked to the world; < 1 = drifts behind, reading as further away.
+    const LAYERS = [
+      [256, 1.00, 0.30 * 1.00, 1.6],
+      [128, 0.72, 0.15 * pulse, 1.1],
+      [64,  0.48, 0.09 * pulse, 0.8],
+    ];
 
+    for (const [step, par, alpha, lw] of LAYERS) {
+      // Offset the layer's origin by the un-tracked fraction of camera motion.
+      const ox = this.camX * (1 - par);
+      const oy = this.camY * (1 - par);
+      const l = this.camX - vw / 2 - 60, r = this.camX + vw / 2 + 60;
+      const t = this.camY - vh / 2 - 60, b = this.camY + vh / 2 + 60;
+      ctx.lineWidth = lw / this.scale;
+      ctx.strokeStyle = rgba(palette.bgGrid, alpha);
+      this._grid(ctx, l, t, r, b, step, ox, oy);
+    }
+  }
+
+  drawBackground(palette, arena, time) {
+    const ctx = this.ctx;
+
+    // Screen-space wash first, then restore the world transform for the grid.
+    this._ambientWash(palette);
+    this._applyWorldTransform(this._lastJuice);
+
+    ctx.globalCompositeOperation = 'lighter';
+    this._depthGrid(palette, time);
     this._arenaBorder(ctx, palette, arena, time);
     ctx.globalCompositeOperation = 'source-over';
   }
 
-  _grid(ctx, l, t, r, b, step) {
+  _grid(ctx, l, t, r, b, step, ox = 0, oy = 0) {
     ctx.beginPath();
-    const x0 = Math.floor(l / step) * step;
-    const y0 = Math.floor(t / step) * step;
+    // Phase the lattice by the parallax offset, then snap to the step grid so the
+    // number of lines drawn stays bounded regardless of how far the camera has moved.
+    const px = ox % step, py = oy % step;
+    const x0 = Math.floor((l - px) / step) * step + px;
+    const y0 = Math.floor((t - py) / step) * step + py;
     for (let x = x0; x <= r; x += step) { ctx.moveTo(x, t); ctx.lineTo(x, b); }
     for (let y = y0; y <= b; y += step) { ctx.moveTo(l, y); ctx.lineTo(r, y); }
     ctx.stroke();
@@ -418,10 +514,19 @@ export class Renderer {
     s = document.createElement('canvas');
     s.width = s.height = S;
     const c = s.getContext('2d');
+    // Multi-stop falloff approximating inverse-square, replacing a near-linear 3-stop
+    // ramp. A linear alpha ramp is exactly what reads as a flat halo pasted around the
+    // shape: it holds too much brightness out at the rim, then stops abruptly. Real
+    // light falls off steeply near the source and then trails a long way — which is
+    // what these stops describe: steep to ~0.38, then a long low skirt to the edge.
     const g = c.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
-    g.addColorStop(0, 'rgba(255,255,255,0.95)');
-    g.addColorStop(0.35, rgba(rgb, 0.9));
-    g.addColorStop(1, rgba(rgb, 0));
+    g.addColorStop(0.00, 'rgba(255,255,255,0.98)');
+    g.addColorStop(0.12, 'rgba(255,255,255,0.70)');
+    g.addColorStop(0.24, rgba(rgb, 0.76));
+    g.addColorStop(0.38, rgba(rgb, 0.40));
+    g.addColorStop(0.55, rgba(rgb, 0.17));
+    g.addColorStop(0.74, rgba(rgb, 0.055));
+    g.addColorStop(1.00, rgba(rgb, 0));
     c.fillStyle = g;
     c.fillRect(0, 0, S, S);
     this._glowCache.set(key, s);
@@ -563,8 +668,15 @@ export class Renderer {
           break;
         }
         case P_MOTE: {
+          // Parallax by depth: a far mote (depth -> 1) is pulled back toward the
+          // camera centre, so it slides across the screen more slowly than the world
+          // does. This is what actually sells the layering — size and alpha alone just
+          // look like differently-sized dots on one plane.
+          const par = p.depth * 0.55;
+          const mx = p.x + (this.camX - p.x) * par;
+          const my = p.y + (this.camY - p.y) * par;
           ctx.fillStyle = `rgba(${p.r},${p.g},${p.b},${p.alpha})`;
-          ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, TAU); ctx.fill();
+          ctx.beginPath(); ctx.arc(mx, my, p.size, 0, TAU); ctx.fill();
           break;
         }
         case P_RING: {

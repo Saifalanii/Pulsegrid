@@ -15,6 +15,7 @@ export const P_TEXT = 5;    // floating damage/score number
 const make = () => ({
   kind: 0, x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 1,
   size: 1, endSize: 0, rot: 0, spin: 0, drag: 1, alpha: 1,
+  depth: 0,                      // ambient motes only; 0 = near, 1 = far. See mote().
   r: 255, g: 255, b: 255, text: '', _idx: 0,
 });
 
@@ -93,16 +94,29 @@ export class Particles {
     p.r = rgb[0]; p.g = rgb[1]; p.b = rgb[2];
   }
 
-  /** Ambient background motes. Given effectively infinite life; recycled by pressure. */
+  /**
+   * Ambient background mote. Effectively infinite life; recycled under pressure.
+   *
+   * Each mote gets a `depth` in 0..1 (0 = right behind the action, 1 = far away) and
+   * everything else is derived from it, so the field reads as layered space instead of
+   * a flat starfield: distant motes are smaller, dimmer, drift slower, and — via the
+   * renderer's parallax offset — track the camera less. Previously size and alpha were
+   * independently random, which produced a uniform fog with no depth ordering at all.
+   */
   mote(x, y, rgb) {
     const p = this._emit();
     if (!p) return;
-    p.kind = P_MOTE; p.x = x; p.y = y;
-    const a = Math.random() * TAU, s = 3 + Math.random() * 9;
+    // Cubed so most motes land in the far field and only a few sit up close — a flat
+    // distribution puts too many big bright dots near the player and reads as noise.
+    const depth = Math.pow(Math.random(), 0.55);
+    p.kind = P_MOTE; p.x = x; p.y = y; p.depth = depth;
+    const near = 1 - depth;
+    const a = Math.random() * TAU;
+    const s = (2 + Math.random() * 7) * (0.25 + near * 0.95);
     p.vx = Math.cos(a) * s; p.vy = Math.sin(a) * s;
     p.life = p.maxLife = 9999;
-    p.size = 0.7 + Math.random() * 1.9;
-    p.alpha = 0.10 + Math.random() * 0.30;
+    p.size = 0.45 + near * 2.0;
+    p.alpha = 0.055 + near * 0.30;
     p.drag = 1;
     p.r = rgb[0]; p.g = rgb[1]; p.b = rgb[2];
   }

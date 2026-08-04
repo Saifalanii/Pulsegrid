@@ -170,6 +170,19 @@ h3.sub { font-size: 13px; letter-spacing: 0.2em; color: var(--text-dim); margin-
 .btn.ghost:active { background: rgba(255,255,255,0.05); }
 .btn.danger { color: #ff8a6e; border-color: rgba(255,110,80,0.3); }
 .btn[disabled] { opacity: 0.4; pointer-events: none; }
+/* Daily already spent: read as "completed", not as "broken/greyed out". Keeps the
+   accent colour and a check-like solidity so it looks like an achievement rather
+   than a disabled control the player is being denied. */
+.btn.done {
+  opacity: 1;
+  background: transparent;
+  border-color: hsl(var(--hue) 70% 45% / 0.55);
+  color: hsl(var(--hue) 70% 62%);
+  box-shadow: none; text-shadow: none;
+}
+.btn.done::before {
+  content: '✓'; margin-right: 2px; font-weight: 900;
+}
 .btn-row { display: flex; gap: 10px; }
 
 .icon-btn {

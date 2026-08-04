@@ -16,6 +16,10 @@ const DEFAULTS = {
   lastDailyDate: null,     // YYYY-MM-DD of the last completed daily
   claimedMilestones: [],   // e.g. [3, 7]
 
+  // YYYY-MM-DD of the day whose Daily Run has been *started*. One attempt per calendar
+  // day, and it's spent the moment the run actually begins — see markDailyAttempted.
+  dailyAttemptedDate: null,
+
   // Daily history: { 'YYYY-MM-DD': { score, wave, time, kills } }
   dailyScores: {},
   bestDailyScore: 0,
@@ -118,6 +122,33 @@ class SaveStore {
       this.data.unlocked.push(id);
       this.save();
     }
+  }
+
+  // ------------------------------------------------------------ daily lock
+
+  /**
+   * Has today's Daily Run already been spent?
+   *
+   * Deliberately keyed off `dailyAttemptedDate` rather than `dailyScores` or
+   * `lastDailyDate`: those are only written when a run *finishes*, so checking them
+   * would let a player force-quit at 0:30, relaunch, and get a fresh attempt at the
+   * same seed. The whole point of a shared daily is that everyone gets one go.
+   */
+  dailyLocked(today = todayKey()) {
+    return this.data.dailyAttemptedDate === today;
+  }
+
+  /**
+   * Spend today's attempt. Called the instant the run actually starts — not when it
+   * ends — and written with saveNow() rather than the debounced save() so that killing
+   * the app mid-run (or a crash, or a phone call) can't roll the attempt back. Backing
+   * out of the pre-run brief never reaches here, which is the intended escape hatch.
+   */
+  markDailyAttempted(today = todayKey()) {
+    if (this.data.dailyAttemptedDate === today) return false;
+    this.data.dailyAttemptedDate = today;
+    this.saveNow();
+    return true;
   }
 
   // ------------------------------------------------------------ streak

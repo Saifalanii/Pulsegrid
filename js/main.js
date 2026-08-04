@@ -185,6 +185,14 @@ class Game {
   // ------------------------------------------------------------ flow
 
   openBrief(mode) {
+    // Guard here as well as in the UI: the menu button is disabled once the daily is
+    // spent, but "RUN AGAIN" on the results screen and the manifest's ?mode=daily
+    // shortcut both route through here too, and neither consults the button's state.
+    if (mode === 'daily' && save.dailyLocked()) {
+      this.ui.toast('Today’s Daily is done. Practice is unlimited.');
+      this.ui.show('menu');
+      return;
+    }
     this.lastMode = mode;
     this.pendingConfig = makeRunConfig(mode, todayKey());
     this.ui.showBrief(this.pendingConfig);
@@ -193,6 +201,10 @@ class Game {
   beginRun() {
     const cfg = this.pendingConfig || makeRunConfig(this.lastMode, todayKey());
     this.pendingConfig = null;
+
+    // Spend the daily attempt now, at the point of no return. Doing this at run *end*
+    // would mean a force-quit mid-run costs nothing and the seed can be re-rolled.
+    if (cfg.isDaily) save.markDailyAttempted(cfg.dateKey);
 
     this.run = new Run(cfg);
     this.run.particles.setBudget(this.renderer.quality === 'high' ? 1 : 0.55);
@@ -390,7 +402,7 @@ class Game {
 
     r.updateCamera(active.player.x, active.player.y, active.arena, dt, {
       x: active.player.vx * 0.09, y: active.player.vy * 0.09,
-    });
+    }, this.state === S_PLAYING ? (active.intensity || 0) : 0);
 
     r.begin(pal, juice);
     active.draw(r);
