@@ -716,7 +716,17 @@ input[type=range]::-moz-range-thumb {
   width: 22px; height: 22px; border-radius: 50%; border: none;
   background: var(--c); cursor: pointer;
 }
+/* Stacked variant: control drops below the label so a wide option set has the full
+   row width instead of fighting the label for it on a narrow phone. */
+.setting.stacked { flex-direction: column; align-items: stretch; gap: 11px; }
+.setting.stacked .setting-ctl { width: 100%; }
+
 .seg { display: flex; gap: 4px; }
+/* Grid rather than wrapping flex: with flex-wrap, a trailing item that wraps alone
+   stretches to the full row (a 5-option set rendered as 4 + one 307px-wide button).
+   A fixed 3-column grid keeps every option the same size. */
+.seg.wrap { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+.seg.wrap button { min-width: 0; }
 .seg button {
   font: inherit; font-size: 11px; font-weight: 700; letter-spacing: 0.1em;
   padding: 9px 11px; border-radius: 8px; cursor: pointer;

@@ -5,7 +5,7 @@
 // is the fastest way to lose the 60fps target.
 
 import { save, MILESTONES } from '../core/save.js';
-import { audio } from '../core/audio.js';
+import { audio, SHOOT_STYLE_IDS, SHOOT_STYLE_LABELS } from '../core/audio.js';
 import { juice } from '../fx/juice.js';
 import { SHOP, WEAPONS, STREAK_LOCKED } from '../game/defs.js';
 import { TRAILS } from '../game/palette.js';
@@ -807,10 +807,15 @@ export class UI {
       list.appendChild(row);
     };
 
-    const addSeg = (label, sub, key, options, onChange) => {
-      const row = el('div', 'setting');
+    /**
+     * @param {boolean} wide stacks the control under the label instead of beside it.
+     *   Needed once an option set gets past ~3 items: inline, five buttons plus a label
+     *   overflow a 375px-wide phone.
+     */
+    const addSeg = (label, sub, key, options, onChange, wide = false) => {
+      const row = el('div', 'setting' + (wide ? ' stacked' : ''));
       row.innerHTML = `<div><div class="setting-label">${label}</div><div class="setting-sub">${sub}</div></div>`;
-      const seg = el('div', 'seg');
+      const seg = el('div', 'seg' + (wide ? ' wrap' : ''));
       options.forEach(([val, text]) => {
         const b = el('button', s[key] === val ? 'on' : '', text);
         b.addEventListener('click', () => {
@@ -838,6 +843,17 @@ export class UI {
     addToggle('Auto-fire', 'Off means you fire only while touching the right side.', 'autoFire');
     addSeg('Quality', 'Lower this if the frame rate dips.', 'quality',
            [['auto', 'AUTO'], ['high', 'HIGH'], ['low', 'LOW']], (v) => g.setQuality(v));
+
+    addSeg('Shot sound', 'Fires constantly, so pick what you can live with. Tap to hear it.',
+           'shootSound', SHOOT_STYLE_IDS.map((id) => [id, SHOOT_STYLE_LABELS[id].toUpperCase()]),
+           (v) => {
+             audio.shootStyle = v;
+             // Audition it immediately — comparing these from memory is hopeless, and
+             // three shots is roughly how it'll actually sound in a burst.
+             audio.shoot();
+             setTimeout(() => audio.shoot(), 130);
+             setTimeout(() => audio.shoot(), 260);
+           }, true);
 
     const b = $('btn-reset');
     if (b) b.textContent = 'ERASE ALL PROGRESS';

@@ -67,6 +67,7 @@ class Game {
     audio.muted = s.muted;
     audio.sfxVol = s.sfxVolume;
     audio.musicVol = s.musicVolume;
+    audio.shootStyle = s.shootSound;
     juice.shakeScale = s.screenShake;
     juice.haptics = s.haptics;
     this.setQuality(s.quality);

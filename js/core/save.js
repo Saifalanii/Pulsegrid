@@ -43,6 +43,7 @@ const DEFAULTS = {
     quality: 'auto',       // auto | high | low
     leftHanded: false,
     autoFire: true,
+    shootSound: 'pulse',   // see SHOOT_STYLES in core/audio.js
   },
 
   seenTutorial: false,
